@@ -54,9 +54,6 @@ install -m 0644 "$ROOT/README.md" "$STAGE/usr/share/doc/$NAME/README"
 # control-файлы
 install -m 0644 "$PKGDIR/control"    "$STAGE/DEBIAN/control"
 install -m 0644 "$PKGDIR/conffiles"  "$STAGE/DEBIAN/conffiles"
-# про conffiles: файл /etc/security/math_challenge.conf уже внутри пакета,
-# dpkg управляет им — раскомментируем строку в conffiles
-sed -i 's|^#\(/etc/security/math_challenge\.conf\)$|\1|' "$STAGE/DEBIAN/conffiles"
 
 for hook in postinst prerm postrm; do
     install -m 0755 "$PKGDIR/$hook" "$STAGE/DEBIAN/$hook"

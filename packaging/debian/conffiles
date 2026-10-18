@@ -1,3 +1,1 @@
-# Файлы, управляемые dpkg как conffiles — пользовательские изменения
-# сохраняются при апгрейде.
-#/etc/security/math_challenge.conf
+/etc/security/math_challenge.conf
