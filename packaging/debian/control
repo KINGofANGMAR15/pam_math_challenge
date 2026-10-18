@@ -1,5 +1,5 @@
 Package: pam-math-challenge
-Version: 1.1.1
+Version: 1.2.0
 Section: admin
 Priority: optional
 Architecture: amd64

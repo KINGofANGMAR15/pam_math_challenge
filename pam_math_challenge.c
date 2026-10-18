@@ -65,6 +65,11 @@ typedef struct {
     char *state_dir;
     char  exempt[EXEMPT_MAX][NAME_LEN];
     int   exempt_n;
+    /* combined-режим ("пароль:ответ" одним промптом) для одно-промптовых
+     * greeter'ов (kscreenlocker/plasmalogin и т.п.) */
+    int        sp_all;
+    char       sp[16][NAME_LEN];
+    int        sp_n;
 } cfg_t;
 
 typedef struct {
@@ -84,6 +89,30 @@ static void str_rtrim(char *s)
 {
     size_t n = strlen(s);
     while (n > 0 && isspace((unsigned char)s[n - 1])) s[--n] = '\0';
+}
+
+/* Разбор запятой-списка в массив имён: аккуратно по сегментам
+ * (сегмент копируется в буфер, тримится, пустые пропускаются). */
+static void parse_list(const char *val, char out[][NAME_LEN], int max, int *count)
+{
+    const char *tok = val;
+    while (*tok && *count < max) {
+        const char *comma = strchr(tok, ',');
+        size_t seglen = comma ? (size_t)(comma - tok) : strlen(tok);
+        char tmp[NAME_LEN];
+        if (seglen >= sizeof(tmp)) { tmp[0] = '\0'; }
+        else {
+            memcpy(tmp, tok, seglen);
+            tmp[seglen] = '\0';
+            str_rtrim(tmp);
+        }
+        if (tmp[0] != '\0' && *count < max) {
+            memcpy(out[*count], tmp, strlen(tmp) + 1);
+            (*count)++;
+        }
+        if (!comma) break;
+        tok = comma + 1;
+    }
 }
 
 /* Строгий разбор целого: [+-]?[0-9]+, без мусора. */
@@ -119,6 +148,10 @@ static void cfg_defaults(cfg_t *c)
     c->cooldown   = DEFAULT_COOLDOWN;
     c->ignore_flag = 0;
     c->state_dir  = strdup(DEFAULT_STATE_DIR);
+    /* по умолчанию combined-режим включён для одно-промптовых greeter'ов */
+    memcpy(c->sp[0], "kde", 4);
+    memcpy(c->sp[1], "plasmalogin", 12);
+    c->sp_n = 2;
     if (!c->state_dir) abort();  /* из-под root при загрузке malloc не подводит */
 }
 
@@ -183,21 +216,13 @@ static int load_conf(const char *path, cfg_t *c)
             free(c->state_dir);
             c->state_dir = n;
         } else if (!strcmp(key, "exempt_users")) {
-            char *tok = val;
-            while (*tok && c->exempt_n < EXEMPT_MAX) {
-                char *comma = strchr(tok, ',');
-                size_t len = comma ? (size_t)(comma - tok) : strlen(tok);
-                while (len && isspace((unsigned char)*tok)) { tok++; len--; }
-                str_rtrim(tok);
-                len = strlen(tok);
-                if (len == 0) { if (!comma) break; tok = comma + 1; continue; }
-                if (len > NAME_LEN - 1) { rc = -1; break; }
-                memcpy(c->exempt[c->exempt_n], tok, len + 1);
-                c->exempt_n++;
-                if (!comma) break;
-                tok = comma + 1;
-            }
-            if (*tok && c->exempt_n >= EXEMPT_MAX) rc = -1;
+            parse_list(val, c->exempt, EXEMPT_MAX, &c->exempt_n);
+        } else if (!strcmp(key, "single_prompt")) {
+            if (!strcasecmp(val, "true") || !strcmp(val, "1")) c->sp_all = 1;
+            else if (!strcasecmp(val, "false") || !strcmp(val, "0")) c->sp_all = c->sp_n = 0;
+            else rc = -1;
+        } else if (!strcmp(key, "single_prompt_services")) {
+            parse_list(val, c->sp, 16, &c->sp_n);
         } else {
             rc = -1;   /* неизвестная директива -> fail-open при ошибках в ключе */
         }
@@ -450,6 +475,126 @@ static int user_is_exempt(const cfg_t *c, const char *user)
     return 0;
 }
 
+/* Быть ли в combined-режиме для этого PAM-сервиса */
+static int should_single_prompt(pam_handle_t *pamh, const cfg_t *c)
+{
+    const char *svc = NULL;
+    int i;
+
+    if (c->sp_all) return 1;
+    if (pam_get_item(pamh, PAM_SERVICE, (const void **)&svc) != PAM_SUCCESS
+        || !svc || !*svc) return 0;
+    for (i = 0; i < c->sp_n; i++)
+        if (!strcmp(c->sp[i], svc)) return 1;
+    return 0;
+}
+
+/* ---------------- combined-режим («пароль:ответ» одним промптом) ----------------
+ *
+ * Для одно-промптовых greeter'ов (диагностика v1.1.1 показала: kscreenlocker
+ * и plasmalogin отвечают на второй промпт пустотой) используем схему:
+ *   1. модуль идёт ПЕРВЫМ в auth-стеке и показывает ОДИН промпт:
+ *      "Пример ... введите пароль:ответ";
+ *   2. ответ разбирается на пароль и число; если число = ответ примера,
+ *      пароль сохраняется в PAM_AUTHTOK (pam_set_item);
+ *   3. далее в стеке pam_unix с try_first_pass берёт PAM_AUTHTOK молча.
+ *
+ * Ставьте модуль ДО pam_unix (после него — бессмысленно: пароль уже проверен).
+ */
+static int auth_single_prompt(pam_handle_t *pamh, const cfg_t *c, const char *user)
+{
+    state_t st;
+    long now;
+    int i;
+
+    load_state(c->state_dir, user, &st);
+    now = time(NULL);
+
+    if (st.lock_until > now) {
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "Учётная запись заблокирована. Осталось ~%ld с", st.lock_until - now);
+        info_msg(pamh, msg);   /* одно-промптовый greeter может не показать */
+        pam_syslog(pamh, LOG_NOTICE, "single: user %s locked ~%ld s", user,
+                   st.lock_until - now);
+        return PAM_AUTH_ERR;
+    }
+    if (st.lock_until && st.lock_until <= now) {
+        st.fails = 0;
+        st.lock_until = 0;
+        save_state(pamh, c->state_dir, user, &st);
+    }
+
+    for (i = 0; i < c->attempts; i++) {
+        int ans = 0;
+        char q[256], prompt[620];
+        char *answer = NULL;
+        char *sep;
+        size_t pwlen = 0;
+        int numeric = 0, ok = 0;
+        long got = 0;
+
+        gen_question(c, q, sizeof(q), &ans);
+        snprintf(prompt, sizeof(prompt),
+                 "Пример: %s || Введите пароль и ответ через двоеточие (пароль:ответ)",
+                 q);
+
+        if (ask_user(pamh, prompt, &answer) != 0) {
+            pam_syslog(pamh, LOG_ERR, "single: conv failed for %s (attempt %d/%d)",
+                       user, i + 1, c->attempts);
+            return PAM_CONV_ERR;
+        }
+
+        sep = strrchr(answer, ':');
+        if (sep) {
+            const char *ans_part = sep + 1;
+            pwlen = (size_t)(sep - answer);
+            numeric = (parse_long_strict(ans_part, &got) == 0);
+            ok = numeric && (got == ans);
+        }
+        pam_syslog(pamh, LOG_INFO,
+                   "single attempt %d/%d: has_sep=%s numeric=%s pwlen=%zu",
+                   i + 1, c->attempts, sep ? "yes" : "no", numeric ? "yes" : "no",
+                   pwlen);
+
+        if (!ok) {
+            secure_zero(answer, strlen(answer));
+            free(answer);
+            continue;
+        }
+
+        /* Верный ответ: спрятать пароль в PAM_AUTHTOK для pam_unix try_first_pass */
+        {
+            int pr = pam_set_item(pamh, PAM_AUTHTOK, answer);
+            secure_zero(answer, strlen(answer));
+            free(answer);
+            if (pr != PAM_SUCCESS) {
+                pam_syslog(pamh, LOG_ERR, "single: pam_set_item(PAM_AUTHTOK) failed (%s)",
+                           pam_strerror(pamh, pr));
+                return PAM_CONV_ERR;
+            }
+        }
+        pam_syslog(pamh, LOG_INFO, "single: math ok, PAM_AUTHTOK set for %s", user);
+
+        st.fails = 0;
+        st.lock_until = 0;
+        if (save_state(pamh, c->state_dir, user, &st))
+            pam_syslog(pamh, LOG_WARNING, "single: cannot persist reset for %s", user);
+        return c->ignore_flag ? PAM_IGNORE : PAM_SUCCESS;
+    }
+
+    /* Попытки исчерпаны */
+    st.fails++;
+    if (c->cooldown > 0)
+        st.lock_until = time(NULL) + c->cooldown;
+    info_msg(pamh, "Неверный ввод. Учётная запись заблокирована.");
+    if (save_state(pamh, c->state_dir, user, &st))
+        pam_syslog(pamh, LOG_WARNING, "single: cannot persist lock for %s", user);
+    pam_syslog(pamh, LOG_NOTICE, "single: user %s failed %d attempts, cooldown=%d",
+               user, c->attempts, c->cooldown);
+    return PAM_AUTH_ERR;
+}
+
 PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
                                    int argc, const char **argv)
 {
@@ -489,6 +634,13 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
     if (user_is_exempt(&cfg, user)) {
         cfg_free(&cfg);
         return PAM_IGNORE;
+    }
+
+    /* ---- combined-режим (одно-промптовые greeter'ы: kde, plasmalogin…) ---- */
+    if (should_single_prompt(pamh, &cfg)) {
+        final_status = auth_single_prompt(pamh, &cfg, user);
+        cfg_free(&cfg);
+        return final_status;
     }
 
     load_state(cfg.state_dir, user, &st);
