@@ -1,0 +1,22 @@
+#!/bin/sh
+# postinst: подключаем модуль к PAM-стеку LightDM (idempotent).
+# Все действия — через наш же хелпер, чтобы логика совпадала с ручной установкой.
+
+set -e
+
+HELPER="/usr/sbin/pam-math-challenge"
+
+if command -v lightdm >/dev/null 2>&1; then
+    if [ -x "$HELPER" ] && [ -f /etc/pam.d/lightdm ]; then
+        # хелпер не даёт hard-ошибку, если светdim ещё не настроен —
+        # постайнст не должен падать
+        "$HELPER" enable || true
+    fi
+else
+    echo "pam-math-challenge: LightDM не установлен."
+    echo "После установки lightdm выполните: sudo pam-math-challenge enable"
+fi
+
+#DEBHELPER#
+
+exit 0

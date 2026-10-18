@@ -1,0 +1,13 @@
+#!/bin/sh
+# postrm: чистим бэкап PAM-файла, созданный при enable.
+
+set -e
+
+if [ "$1" = "purge" ]; then
+    rm -f /etc/pam.d/lightdm.pammath.bak
+    rm -rf /var/run/math_challenge 2>/dev/null || true
+fi
+
+#DEBHELPER#
+
+exit 0
