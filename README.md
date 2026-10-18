@@ -1,111 +1,124 @@
-# pam_math_challenge — второй фактор входа (математический челлендж)
+# pam_math_challenge
 
-Модуль Linux-PAM для Linux Mint (LightDM / Slick Greeter). После успешной
-проверки пароля greeter показывает математический пример; при исчерпании
-попыток учётная запись временно блокируется.
+PAM-модуль для Linux, который добавляет **математический челлендж как второй
+фактор входа** и умеет **временно блокировать учётную запись** при исчерпании
+попыток.
 
-## 1. Сборка
+Поддерживаемые окружения:
+
+| Дистрибутив | Display manager | Статус |
+|---|---|---|
+| Linux Mint, Ubuntu, Debian | LightDM + Slick Greeter | ✅ основная цель |
+| Arch Linux, EndeavourOS     | LightDM / Slick Greeter | ✅ поддерживается |
+| любые, TTY                  | tty login               | ⚠️ работает (текстовый диалог) |
+| GDM                          | GDM                     | ⚠️ работает, не протестировано |
+| SDDM, LXDM, Entrance         | эти DM                  | ❌ не поддерживается (нет многошаговых PAM-диалогов) |
+
+«Графичность» подсказывает сам greeter: модуль не рисует собственный GUI,
+а передаёт вопрос через `pam_conv`. LightDM/Slick Greeter рисует его как поле
+ввода на экране входа, tty — как обычное read-line сообщение.
+
+## Как работает
+
+1. Пользователь вводит пароль (проверяет `pam_unix` / `lightdm-auth`);
+2. `pam_math_challenge` вызывается **после** пароля из `/etc/pam.d/lightdm`;
+3. greeter показывает пример (Easy / Medium / Hard);
+4. верный ответ → `PAM_SUCCESS`/`PAM_IGNORE`, неверный ответ → часть attempts;
+   исчерпал попытки → блокировка (`lock_until=now+cooldown`) и отказ входа;
+5. при попытке входа в течение `cooldown_seconds` → сразу отказ, без вопроса.
+
+Состояние хранится в `/run/math_challenge/<user>` (root-only, очищается при
+ребуте). Блокировку можно сбросить удалением файла или правкой `/etc/pam.d/lightdm`.
+
+## Установка
+
+### Debian / Ubuntu / Linux Mint
 
 ```bash
 sudo apt install build-essential libpam0g-dev
 cd pam_math_challenge
-make
-make test-conf     # убедиться, что .so линкуется без undefined symbols
+sudo make install && sudo ./install.sh
 ```
 
-## 2. Установка
+### Arch Linux / EndeavourOS
 
 ```bash
-sudo make install          # копирует .so и (если нет) конфиг
+sudo pacman -S base-devel pam
+cd pam_math_challenge
+sudo make install && sudo ./install.sh
 ```
 
-`.so` окажется в `/usr/lib/x86_64-linux-gnu/security/pam_math_challenge.so`.
+> **Примечание** на Arch/EndeavourOS: `install.sh` автоматически найдёт
+> каталог `/usr/lib/security/` (Arch) или `/usr/lib/x86_64-linux-gnu/security/`
+> (Debian) — сильно вручную выбирать не нужно.
 
-Проверьте реальный `security/` каталог на вашей системе:
+> **Автоматизация install.sh**: сам скрипт ищет и устанавливает модуль,
+> бэкапит `/etc/pam.d/lightdm` в `lightdm.pammath.bak`, добавляет строку
+> `auth optional pam_math_challenge.so` (idempotent — повторный запуск
+> ничего не сломает), и чистит после себя при `--uninstall`.
+
+### GUI-установка
+
+`install.sh` умеет корректно брать root-через-GUI: если вы запускаете
+его из терминала **внутри графической сессии** и `sudo` недоступен
+(например, чистая Arch + `polkit`), он вызывает `pkexec` с графическим
+диалогом запроса пароля — тогда «настройка через GUI» тоже работает.
+
+## Конфигурация
+
+`/etc/security/math_challenge.conf`:
+
+```ini
+difficulty = easy|medium|hard
+attempts = 3                # попыток в одной сессии входа
+cooldown_seconds = 300      # время блокировки после провала
+exempt_users = user1,user2  # кого не спрашивать
+state_dir = /run/math_challenge
+ignore_errors = false       # PAM_IGNORE вместо PAM_SUCCESS после верного ответа
+```
+
+## Удаление
 
 ```bash
-dpkg -L libpam-modules:amd64 | grep -m1 '/security/'
+sudo ./install.sh --uninstall
 ```
 
-## 3. Конфигурация
+Деактивирует модуль, восстанавливает `/etc/pam.d/lightdm` из бэкапа, удаляет
+`.so` и конфиг. Вы по любому можете просто вручную убрать строку из
+`/etc/pam.d/lightdm`, чтобы временно отключить.
 
-`/etc/security/math_challenge.conf` (см. `math_challenge.conf` в репо):
+## Тестирование (не заблокировать себя)
 
-- `difficulty` = easy | medium | hard
-- `attempts` = 3 (число попыток в одной сессии входа)
-- `cooldown_seconds` = 300 (сколько секунд аккаунт заблокирован)
-- `exempt_users` = user1,user2 (кто не проходит челлендж)
-- `state_dir` = /run/math_challenge
-- `ignore_errors` = false (указать true => PAM_IGNORE вместо PAM_SUCCESS)
+1. Откройте ssh-сессию или root-tty — «спасательный» вход, не зависящий от lightdm.
+2. НЕ трогайте `/etc/pam.d/common-auth`, чтобы `sudo` не пострадал.
+3. Сначала: `sudo ./install.sh`, затем обычный логин: логин + пароль → пример.
+4. Тест блокировки: 3× неверный ответ → «Учётная запись заблокирована».
+   Повторная попытка входа → сразу отказ, без примера.
+5. Тест exempt: добавьте пользователя в `exempt_users=` — челленджа не будет.
+6. Тест fail-open: `sudo mv /etc/security/math_challenge.conf{,.bak}` — модуль
+   уходит в fail-open, syslog пишет `conf missing/invalid, fail-open`, вход работает.
+7. Сброс state: `sudo rm -f /run/math_challenge/<user>` (или ребут).
+8. Журнал: `journalctl -u lightdm -f` или `/var/log/lightdm/lightdm.log`.
 
-## 4. Подключение в PAM-стек
+## Восстановление, если заперлись
 
-Важно: модуль добавляется ПОСЛЕ проверки пароля (как второй фактор),
-а не вместо неё.
-
-**Вариант A (рекомендуемый для начала): optional + ignore_errors=true**
-```pam
-auth  required            pam_permit.so   # НЕ редактируйте эту строку, пример-иллюстрация
-# пароль уже проверили pam_unix / lightdm-auth ранее в стеке
-# добавьте В САМОМ КОНЦЕ auth-секции файла /etc/pam.d/lightdm:
-auth  optional            pam_math_challenge.so
-```
-
-**Вариант B: required (жёсткий второй фактор)** — то же самое, но
-`required`. Тогда без корректного ответа вход невозможен.
-
-Не вставляйте модуль **до** `pam_unix` — тогда челлендж появится до
-пароля, и смысла во втором факторе нет.
-
-## 5. Перезапуск LightDM
-
-`lightdm` читает PAM-стек на каждой новой попытке логина, поэтому пере-
-запуск не обязателен, но после установки lib/so безопаснее сделать:
-
-```bash
-sudo systemctl restart lightdm
-```
-
-⚠️ Это выкинет текущую графическую сессию. Сделайте это из tty (Ctrl+Alt+F1).
-
-## 6. Диагностика
-
-```bash
-journalctl -u lightdm -f     # или: cat /var/log/lightdm/lightdm.log
-syslog | grep math_challenge
-```
-
-## 7. Тестирование (не заблокировать себя)
-
-1. **Тест через tty + ssh-сессию.** Добавьте модуль только в
-   `/etc/pam.d/lightdm`. Откройте второй терминал по ssh (или tty), это
-   ваш «спасательный» вход, не зависящий от lightdm.
-2. **Сухой прогон через sudo su.** Так как модуль по умолчанию НЕ в
-   `/etc/pam.d/common-auth`, он никак не заденет sudo.
-3. **Проверка в lightdm.** Выйдите из X-сессии (не переzaпуская lightdm),
-   введите логин/пароль. Greeter должен показать пример.
-4. **Тест блокировки.** 3 раза введите неверный ответ → появится
-   «Учётная запись заблокирована». Сразу же попробуйте войти ещё раз —
-   диалог примера НЕ появится, сразу отказ.
-5. **Тест exempt.** Добавьте своего пользователя в `exempt_users=` и
-   войдите — челленджа быть не должно.
-6. **Очистка состояния.** `sudo rm -f /run/math_challenge/<user>` — state
-   файл обнулит streak+блокировку немедленно (или просто ребут: /run).
-7. **Fail-open тест.** `sudo mv /etc/security/math_challenge.conf{,.bak}`
-   → вход должен работать как раньше, а в syslog придёт
-   `conf missing/invalid, fail-open`.
-
-## 8. Восстановление доступа при «заперся»
-
-- Загрузитесь с `init=/bin/bash`
-  (GRUB: `e`, к строке `linux` допишите, Ctrl+X)
+- GRUB → `e` → допишите к строке `linux ...` → `init=/bin/bash` → Ctrl+X
 - `mount -o remount,rw /`
-- `rm -f /run/math_challenge/<user>` или правьте `/etc/pam.d/lightdm`,
-  уберите строку `pam_math_challenge.so`, `sync`, `reboot` — либо просто
-   уберите строку из PAM-стека.
+- правьте `/etc/pam.d/lightdm`, уберите `pam_math_challenge.so` строку (или `rm -f /run/math_challenge/<user>`)
+- `sync; reboot`
 
-## 9. Резервный вход, если что-то пошло не так
+## Что в репозитории
 
-Всегда держите открытым ssh-сессию или root-tty, пока тестируете. Убедитесь,
-что `/etc/pam.d/common-auth` остался нетронутым — он же влияет на `sudo`
-(иначе есть шанс потерять root-доступ тоже).
+```
+pam_math_challenge.c    — исходник модуля
+Makefile                — сборка с relro/stack-protector; авто-поиск security/
+math_challenge.conf     — пример /etc/security/math_challenge.conf
+install.sh              — автосборка, автоподключение PAM-стека, backup/uninstall
+README.md               — этот файл
+```
+
+## Безопасность
+
+Сборка с `-fstack-protector-strong`, `-D_FORTIFY_SOURCE=2`, relro/now.
+Ответ примера живёт только на стеке внутри итерации цикла; буфер ответа
+обнуляется `secure_zero`-ом сразу после проверки.
