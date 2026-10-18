@@ -1,0 +1,26 @@
+# pacman scriptlet: подключение/отключение PAM-строки при установке/удалении.
+# ВАЖНО: pre_remove вызвать ДО удаления файлов, иначе lightdm остаётся с
+# битым стеком (pam не найдёт .so -> auth будет падать).
+
+post_install() {
+    if command -v lightdm >/dev/null 2>&1 && [ -f /etc/pam.d/lightdm ]; then
+        /usr/bin/pam-math-challenge enable || true
+    else
+        echo "pam-math-challenge: LightDM не найден."
+        echo "После установки LightDM выполните: sudo pam-math-challenge enable"
+    fi
+}
+
+pre_upgrade() {
+    # при апгрейде строка в PAM-файле остаётся — .so просто перезапишется;
+    # ничего делать не надо. Но для чистоты можно отключить/включить заново.
+    :
+}
+
+pre_remove() {
+    /usr/bin/pam-math-challenge disable || true
+}
+
+post_remove() {
+    rm -f /etc/pam.d/lightdm.pammath.bak
+}

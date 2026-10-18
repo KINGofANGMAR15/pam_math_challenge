@@ -1,0 +1,110 @@
+#!/bin/sh
+# pam-math-challenge — включение/отключение челленджа в PAM-стеке LightDM.
+#
+# Управляет строкой "auth optional pam_math_challenge.so" в /etc/pam.d/lightdm.
+# Работает идемпотентно, создаёт бэкап перед первым изменением.
+#
+# Использование:
+#   pam-math-challenge enable     — подключить модуль (idempotent)
+#   pam-math-challenge disable    — отключить (убрать строку)
+#   pam-math-challenge status     — установлен ли / активен ли
+#   pam-math-challenge restart    — перезапуск lightdm (потеряет X-сессию)
+#
+# Поддерживаемые дистрибутивы: Linux Mint, Ubuntu (Debian-based), Arch,
+# EndeavourOS (Arch-based) с LightDM.
+
+set -u
+
+PAM_NAME="pam_math_challenge"
+PAM_LIB_CANDIDATES="/usr/lib/x86_64-linux-gnu/security /usr/lib/security /usr/lib64/security /lib/security"
+CONF_PATH="/etc/security/math_challenge.conf"
+
+msg()   { printf '%s\n' "$*"; }
+ok()    { printf '[+] %s\n' "$*"; }
+warn()  { printf '[!] %s\n' "$*" >&2; }
+die()   { printf '[x] %s\n' "$*" >&2; exit 1; }
+
+find_lib_dir() {
+    for d in $PAM_LIB_CANDIDATES; do
+        [ -f "$d/${PAM_NAME}.so" ] && { echo "$d"; return 0; }
+    done
+    return 1
+}
+
+line_exists() {
+    # строка может быть закомментирована или с другим параметром — ищем по
+    # имени модуля среди АКТИВНЫХ auth-строк (не начинаются с '#')
+    grep -qE "^[[:space:]]*auth[[:space:]]+[^#]*${PAM_NAME}\.so" "$1" 2>/dev/null
+}
+
+enable_module() {
+    [ "$(id -u)" -eq 0 ] || die "enable требует root (sudo pam-math-challenge enable)"
+    PAM_FILE="/etc/pam.d/lightdm"
+    [ -f "$PAM_FILE" ] || die "$PAM_FILE не найден — LightDM не установлен?"
+
+    if line_exists "$PAM_FILE"; then
+        ok "модуль уже активен в $PAM_FILE"
+        return 0
+    fi
+
+    BACKUP="${PAM_FILE}.pammath.bak"
+    if [ ! -f "$BACKUP" ]; then
+        cp -a "$PAM_FILE" "$BACKUP" && ok "бэкап: $BACKUP"
+    fi
+    printf 'auth optional %s.so\n' "$PAM_NAME" >> "$PAM_FILE"
+    ok "добавлена строка в $PAM_FILE"
+    msg "    Перезапустите lightdm: pam-math-challenge restart (потеряет текущую X-сессию)"
+    msg "    или просто выйдите из сеанса — новый стек прочитается автоматически."
+}
+
+disable_module() {
+    [ "$(id -u)" -eq 0 ] || die "disable требует root"
+    PAM_FILE="/etc/pam.d/lightdm"
+    [ -f "$PAM_FILE" ] || return 0
+
+    if line_exists "$PAM_FILE"; then
+        sed -i "/^[[:space:]]*auth[[:space:]]\+[^#]*${PAM_NAME}\.so/d" "$PAM_FILE"
+        ok "строка удалена из $PAM_FILE"
+    else
+        ok "в $PAM_FILE нет активной строки — ничего не делаю"
+    fi
+}
+
+show_status() {
+    LINE="?"
+    LIB_DIR="$(find_lib_dir || true)"
+    CONF="?"
+    if [ -f "$CONF_PATH" ]; then CONF="yes: $CONF_PATH"; else CONF="no"; fi
+    if [ -n "${LIB_DIR:-}" ] && [ -f "$LIB_DIR/${PAM_NAME}.so" ]; then
+        SO="installed: $LIB_DIR/${PAM_NAME}.so"
+    else
+        SO="not installed"
+    fi
+    if grep -qE "^[[:space:]]*auth[[:space:]]+[^#]*${PAM_NAME}\.so" /etc/pam.d/lightdm 2>/dev/null; then
+        ACTIVE="enabled in /etc/pam.d/lightdm"
+    else
+        ACTIVE="not enabled (/etc/pam.d/lightdm)"
+    fi
+    msg "module   : $SO"
+    msg "pam stack: $ACTIVE"
+    msg "config   : $CONF"
+}
+
+restart_lightdm() {
+    [ "$(id -u)" -eq 0 ] || die "restart требует root"
+    if command -v systemctl >/dev/null 2>&1; then
+        warn "ПЕРЕЗАПУСК УБЬЁТ ТЕКУЩУЮ ГРАФИЧЕСКУЮ СЕССИЮ! Убедитесь, что у вас открыт tty или ssh."
+        sleep 3
+        systemctl restart lightdm
+    else
+        die "systemd не найден"
+    fi
+}
+
+case "${1:-status}" in
+    enable)   enable_module ;;
+    disable)  disable_module ;;
+    status)   show_status ;;
+    restart)  restart_lightdm ;;
+    *)        die "использование: $0 {enable|disable|status|restart}" ;;
+esac

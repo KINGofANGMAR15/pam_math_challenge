@@ -32,6 +32,40 @@ PAM-модуль для Linux, который добавляет **матема�
 
 ## Установка
 
+### Через пакет (рекомендуется)
+
+**Mint / Ubuntu / Debian** — сборка и установка .deb (на самой системе с dpkg):
+
+```bash
+./packaging/debian/build_deb.sh
+sudo dpkg -i pam-math-challenge_1.0.0-1_amd64.deb
+# при неудовлетворённых зависимостях: sudo apt -f install
+```
+
+`postinst` пакета сам подключит модуль к `/etc/pam.d/lightdm` (с бэкапом).
+При `dpkg -r`/`purge` скрипт `prerm`/`postrm` сначала уберут строку из
+PAM-стека и только затем удалят `.so` — стек никогда не остаётся битым.
+
+**Arch / EndeavourOS** — сборка и установка `pkg.tar.zst`:
+
+```bash
+makepkg -f
+sudo pacman -U pam-math-challenge-1.0.0-1-x86_64.pkg.tar.zst
+```
+
+pacman scriptlet (`pam-math-challenge.install`) делает то же самое через
+`post_install`/`pre_remove`. Конфиг объявлен в `backup=()`, поэтому pacman
+не затрёт ваши правки в `/etc/security/math_challenge.conf`.
+
+После установки любым способом управлять можно хелпером:
+
+```bash
+sudo pam-math-challenge enable     # подключить в PAM-стек
+sudo pam-math-challenge disable   # отключить
+pam-math-challenge status         # что установлено и активно
+sudo pam-math-challenge restart   # перезапуск lightdm (СБРОСИТ X-сессию!)
+```
+
 ### Debian / Ubuntu / Linux Mint
 
 ```bash
@@ -110,11 +144,16 @@ sudo ./install.sh --uninstall
 ## Что в репозитории
 
 ```
-pam_math_challenge.c    — исходник модуля
-Makefile                — сборка с relro/stack-protector; авто-поиск security/
-math_challenge.conf     — пример /etc/security/math_challenge.conf
-install.sh              — автосборка, автоподключение PAM-стека, backup/uninstall
-README.md               — этот файл
+pam_math_challenge.c        — исходник модуля
+Makefile                    — сборка с relro/stack-protector; авто-поиск security/
+math_challenge.conf         — пример /etc/security/math_challenge.conf
+pam-math-challenge          — CLI-хелпер: enable/disable/status/restart
+install.sh                  — установка из исходников (без пакетного менеджера)
+PKGBUILD                    — сборка pkg.tar.zst для Arch / EndeavourOS
+pam-math-challenge.install  — pacman-скриптлет (post_install/pre_remove)
+packaging/debian/           — сборка .deb: control, postinst, prerm, postrm,
+                              conffiles, build_deb.sh
+README.md                   — этот файл
 ```
 
 ## Безопасность
