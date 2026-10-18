@@ -44,6 +44,36 @@ directories»* (`man 8 pam`, `man 5 pam.d`). После обновления п�
 если его не патчить — разблокировка пускает без челленджа. Хелпер v1.1.0+
 автоматически патчит и вход, и все обнаруженные экраны блокировки.
 
+## Одно-промптовый (combined) режим — «пароль:ответ»
+
+Многие greeter'ы (KScreenLocker, plasmalogin, SDDM — эмпирически
+подтверждено) **не рендерят второй PAM-промпт**: на вопрос они отвечают
+пустотой (диагностика v1.1.1: `attempt N: answer len=0 numeric=no`, три
+«неудачи» за одну секунду). Для таких сервисов модуль v1.2.0+ использует
+combined-схему:
+
+1. модуль стоит **первым** в auth-стеке и показывает **один** промпт:
+   `Пример: Сколько будет 8 · 4? || Введите пароль и ответ через двоеточие`
+2. вам нужно ввести в то же поле пароля: `MyPassword:32`
+3. модуль проверяет математику и кладёт пароль в `PAM_AUTHTOK`;
+4. `pam_unix try_first_pass` (стандартный стек Arch/Mint) подхватывает
+   пароль молча — никаких вторых промптов.
+
+Управление в `/etc/security/math_challenge.conf`:
+
+```ini
+# список сервисов (можно добавить свои)
+single_prompt_services = kde,plasmalogin
+# или глобально для всех:
+single_prompt = true
+# выключить вообще:
+single_prompt = false
+```
+
+Пароль передаётся напрямую между PAM-модулями (не хранится и не логируется).
+Если greeter умеет многошаговые диалоги (LightDM/Slick Greeter, tty) —
+пример показывается отдельным шагом, как раньше.
+
 Состояние хранится в `/run/math_challenge/<user>` (root-only, очищается при
 ребуте). Блокировку можно сбросить удалением этого файла.
 
@@ -51,14 +81,14 @@ directories»* (`man 8 pam`, `man 5 pam.d`). После обновления п�
 
 ### Через пакет (рекомендуется)
 
-> Версии вида `1.1.1-1` в командах ниже — «версия pkgver-pkgrel»; на выходе
+> Версии вида `1.2.0-1` в командах ниже — «версия pkgver-pkgrel»; на выходе
 > сборки имя файла указывается в итоговом выводе, используйте его настоящим.
 
 **Mint / Ubuntu / Debian** — сборка и установка .deb (на самой системе с dpkg):
 
 ```bash
 ./packaging/debian/build_deb.sh
-sudo dpkg -i pam-math-challenge_1.1.1-1_amd64.deb
+sudo dpkg -i pam-math-challenge_1.2.0-1_amd64.deb
 # при неудовлетворённых зависимостях: sudo apt -f install
 ```
 
@@ -71,7 +101,7 @@ sudo dpkg -i pam-math-challenge_1.1.1-1_amd64.deb
 
 ```bash
 makepkg -f
-sudo pacman -U pam-math-challenge-1.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U pam-math-challenge-1.2.0-1-x86_64.pkg.tar.zst
 ```
 
 pacman scriptlet (`pam-math-challenge.install`) делает то же самое через

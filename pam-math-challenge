@@ -36,6 +36,10 @@ VENDOR_PAM="/usr/lib/pam.d"
 LOGIN_SERVICES="lightdm plasmalogin"
 LOCK_SERVICES="kde xfce4-screensaver light-locker xscreensaver gnome-screensaver mate-screensaver cinnamon-screensaver"
 
+# Одно-промптовые greeter'ы (не рендерят вторые PAM-промпты): модуль должен
+# идти ПЕРВЫМ в auth-стеке (combined "пароль:ответ" до pam_unix).
+SINGLE_PROMPT_SERVICES="kde plasmalogin"
+
 MARKER="# pam-math-challenge override (генерируется helper'ом)"
 
 msg()   { printf '%s\n' "$*"; }
@@ -66,7 +70,7 @@ last_auth_line() {
     awk '$1=="auth" || $1=="-auth" {n=NR} END{print n+0}' "$1"
 }
 
-# Вставить строку после последнего auth-правила (или в конец файла).
+# Вставить строку ПОСЛЕ последнего auth-правила (multi-prompt greeter'ы).
 # Второй параметр "nomarker" — не добавлять маркер (для обычных /etc-файлов).
 insert_after_last_auth() {
     file="$1"
@@ -83,6 +87,31 @@ insert_after_last_auth() {
     mv "$tmp" "$file"
 }
 
+# Вставить строку ПЕРЕД первым auth-правилом (одно-промптовые greeter'ы:
+# модуль собеседует ДО pam_unix и кладёт ПАРОЛЬ в PAM_AUTHTOK).
+insert_before_first_auth() {
+    file="$1"
+    tmp="$(mktemp)"
+    n=$(awk '$1=="auth" || $1=="-auth" {print NR; exit}' "$file")
+    if [ "${n:-0}" -gt 0 ]; then
+        awk -v n="$n" -v line="auth optional ${PAM_NAME}.so" \
+            'NR==n{print line; print; next} {print}' "$file" > "$tmp"
+    else
+        { printf 'auth optional %s.so\n' "$PAM_NAME"; cat "$file"; } > "$tmp"
+    fi
+    printf '\n%s\n' "$MARKER" >> "$tmp"
+    chmod --reference="$file" "$tmp" 2>/dev/null || chmod 0644 "$tmp"
+    mv "$tmp" "$file"
+}
+
+# Какой режим для сервиса? (echo "single" или "multi")
+mode_for_service() {
+    case " $SINGLE_PROMPT_SERVICES " in
+        *" $1 "*) echo single ;;
+        *)        echo multi  ;;
+    esac
+}
+
 enable_one() {
     src="$1"
     name=$(basename "$src")
@@ -90,15 +119,19 @@ enable_one() {
     if [ "${src#$VENDOR_PAM}" != "$src" ]; then
         # vendor-файл из пакета: создаём override в /etc/pam.d
         target="$ETC_PAM/$name"
+        mode=$(mode_for_service "$name")
         if [ -f "$target" ]; then
             if grep -q "$MARKER" "$target" 2>/dev/null; then
                 # наш прошлый override — регенерируем из актуального vendor-файла
                 cp "$src" "$target.new"
-                line_exists "$target" && insert_after_last_auth "$target.new" nomarker
-                insert_after_last_auth "$target.new"
+                if [ "$mode" = single ]; then
+                    insert_before_first_auth "$target.new"
+                else
+                    insert_after_last_auth "$target.new"
+                fi
                 chmod --reference="$target" "$target.new" 2>/dev/null || chmod 0644 "$target.new"
                 mv "$target.new" "$target"
-                ok "override обновлён: $target (из актуального $src)"
+                ok "override обновлён ($mode): $target (из актуального $src)"
             else
                 warn "$target уже существует и не наш — применим вставку строки"
                 line_exists "$target" || insert_after_last_auth "$target" nomarker
@@ -107,8 +140,12 @@ enable_one() {
             return 0
         fi
         install -m 0644 "$src" "$target"
-        insert_after_last_auth "$target"
-        ok "создан override: $target (копия $src + строка)"
+        if [ "$mode" = single ]; then
+            insert_before_first_auth "$target"
+        else
+            insert_after_last_auth "$target"
+        fi
+        ok "создан override ($mode): $target (копия $src + строка)"
         warn "после обновления пакета '$name' перезапустите: pam-math-challenge refresh"
         return 0
     fi
