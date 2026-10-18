@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PKGDIR="$ROOT/packaging/debian"
 STAGE="$PKGDIR/staging"
 NAME="pam-math-challenge"
-VERSION="1.0.0-1"
+VERSION="1.1.0-1"
 ARCH="amd64"
 OUT="$ROOT/${NAME}_${VERSION}_${ARCH}.deb"
 

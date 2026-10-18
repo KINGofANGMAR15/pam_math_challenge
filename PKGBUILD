@@ -3,13 +3,13 @@
 #
 # Сборка (внутри каталога проекта pam_math_challenge/):
 #   makepkg -f
-#   sudo pacman -U pam-math-challenge-1.0.0-1-x86_64.pkg.tar.zst
+#   sudo pacman -U pam-math-challenge-1.1.0-1-x86_64.pkg.tar.zst
 #
 # Если проект клонирован из git, можно также сделать makepkg с git-source —
 # см. комментарий ниже.
 
 pkgname=pam-math-challenge
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Математический чекап как второй фактор входа через PAM (LightDM)"
 arch=('x86_64')

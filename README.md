@@ -6,68 +6,100 @@ PAM-модуль для Linux, который добавляет **матема�
 
 Поддерживаемые окружения:
 
-| Дистрибутив | Display manager | Статус |
+| Дистрибутив | Display manager / экран блокировки | Статус |
 |---|---|---|
 | Linux Mint, Ubuntu, Debian | LightDM + Slick Greeter | ✅ основная цель |
-| Arch Linux, EndeavourOS     | LightDM / Slick Greeter | ✅ поддерживается |
-| любые, TTY                  | tty login               | ⚠️ работает (текстовый диалог) |
-| GDM                          | GDM                     | ⚠️ работает, не протестировано |
-| SDDM, LXDM, Entrance         | эти DM                  | ❌ не поддерживается (нет многошаговых PAM-диалогов) |
+| Arch/EndeavourOS + LightDM | LightDM / Slick Greeter | ✅ поддерживается |
+| Arch/EndeavourOS + KDE Plasma | **plasmalogin** (`/usr/lib/pam.d/plasmalogin`) + лок-скрин **kscreenlocker** (сервис `kde`) | ✅ поддерживается (v1.1.0+, проверено на EndeavourOS) |
+| XFCE / GNOME / MATE / Cinnamon | `xfce4-screensaver` / `gnome-screensaver` (в т.ч. `light-locker`) / `mate-screensaver` / `cinnamon-screensaver` | ✅ поддерживается (v1.1.0+) |
+| любая TTY-сессия | `login` / ssh | ⚠️ работает (текстовый диалог) |
+| GDM | GDM | ⚠️ работает, не протестировано |
+| SDDM, LXDM, Entrance | эти DM | ❌ не поддерживается (нет многошаговых PAM-диалогов) |
 
-«Графичность» подсказывает сам greeter: модуль не рисует собственный GUI,
-а передаёт вопрос через `pam_conv`. LightDM/Slick Greeter рисует его как поле
-ввода на экране входа, tty — как обычное read-line сообщение.
+**Как helper находит ваши стеки.** Хелпер проверяет оба каталога:
+`/etc/pam.d/` (файлы администратора и базовый стек pambase) и `/usr/lib/pam.d/`
+(vendor-файлы, поставляемые пакетами; схема PAM 1.5.3+). Сами vendor-файлы
+не изменяются — их правки потерялись бы при `pacman -Syu`. Вместо этого
+создаётся override `/etc/pam.d/<сервис>`, который имеет приоритет:
+*«All files in /etc/pam.d/ override files with the same name in other
+directories»* (`man 8 pam`, `man 5 pam.d`). После обновления пакета
+(например, Plasma) override регенерируется командой `refresh`.
+
+«Графичность» обеспечивается самим greeter/лок-скрином: модуль не рисует
+собственный GUI, а передаёт вопрос через `pam_conv`. Greeter/Slick Greeter рисует
+его как поле ввода на экране входа, tty — как обычное read-line сообщение.
 
 ## Как работает
 
-1. Пользователь вводит пароль (проверяет `pam_unix` / `lightdm-auth`);
-2. `pam_math_challenge` вызывается **после** пароля из `/etc/pam.d/lightdm`;
+1. Пользователь вводит пароль (проверяет `pam_unix` / greeter-стек);
+2. `pam_math_challenge` вызывается **после** пароля из PAM-стека сервиса входа
+   (`lightdm`, `plasmalogin`, …);
 3. greeter показывает пример (Easy / Medium / Hard);
 4. верный ответ → `PAM_SUCCESS`/`PAM_IGNORE`, неверный ответ → часть attempts;
    исчерпал попытки → блокировка (`lock_until=now+cooldown`) и отказ входа;
 5. при попытке входа в течение `cooldown_seconds` → сразу отказ, без вопроса.
 
+Экран блокировки (lock screen) проходит через **другой** PAM-сервис
+(например, `kde` для KDE Plasma / kscreenlocker, `xfce4-screensaver` для XFCE):
+если его не патчить — разблокировка пускает без челленджа. Хелпер v1.1.0+
+автоматически патчит и вход, и все обнаруженные экраны блокировки.
+
 Состояние хранится в `/run/math_challenge/<user>` (root-only, очищается при
-ребуте). Блокировку можно сбросить удалением файла или правкой `/etc/pam.d/lightdm`.
+ребуте). Блокировку можно сбросить удалением этого файла.
 
 ## Установка
 
 ### Через пакет (рекомендуется)
 
-> Версии вида `1.0.0-1` в командах ниже — «версия pkgver-pkgrel»; на выходе
+> Версии вида `1.1.0-1` в командах ниже — «версия pkgver-pkgrel»; на выходе
 > сборки имя файла указывается в итоговом выводе, используйте его настоящим.
 
 **Mint / Ubuntu / Debian** — сборка и установка .deb (на самой системе с dpkg):
 
 ```bash
 ./packaging/debian/build_deb.sh
-sudo dpkg -i pam-math-challenge_1.0.0-1_amd64.deb
+sudo dpkg -i pam-math-challenge_1.1.0-1_amd64.deb
 # при неудовлетворённых зависимостях: sudo apt -f install
 ```
 
-`postinst` пакета сам подключит модуль к `/etc/pam.d/lightdm` (с бэкапом).
-При `dpkg -r`/`purge` скрипт `prerm`/`postrm` сначала уберут строку из
-PAM-стека и только затем удалят `.so` — стек никогда не остаётся битым.
+`postinst` пакета сам подключит модуль ко **всем найденным** стекам
+(вход + экран блокировки, с бэкапом/override'ами). При `dpkg -r`/`purge`
+скрипт `prerm`/`postrm` сначала уберут строки и override'ы и только затем
+удалят `.so` — стек никогда не остаётся битым.
 
 **Arch / EndeavourOS** — сборка и установка `pkg.tar.zst`:
 
 ```bash
 makepkg -f
-sudo pacman -U pam-math-challenge-1.0.0-1-x86_64.pkg.tar.zst
+sudo pacman -U pam-math-challenge-1.1.0-1-x86_64.pkg.tar.zst
 ```
 
 pacman scriptlet (`pam-math-challenge.install`) делает то же самое через
 `post_install`/`pre_remove`. Конфиг объявлен в `backup=()`, поэтому pacman
-не затрёт ваши правки в `/etc/security/math_challenge.conf`.
-
-После установки любым способом управлять можно хелпером:
+не затрёт ваши правки в `/etc/security/math_challenge.conf`.После установки любым способом управлять можно хелпером:
 
 ```bash
-sudo pam-math-challenge enable     # подключить в PAM-стек
-sudo pam-math-challenge disable   # отключить
-pam-math-challenge status         # что установлено и активно
-sudo pam-math-challenge restart   # перезапуск lightdm (СБРОСИТ X-сессию!)
+sudo pam-math-challenge enable     # подключить ВООБЩЕ ВСЕ найденные стеки
+                                   # (логин + экран блокировки)
+sudo pam-math-challenge disable   # отключить отовсюду
+pam-math-challenge status         # какой стек найден, где активен
+sudo pam-math-challenge refresh   # регенерировать override'ы /etc/pam.d
+                                  # после обновления Plasma/KDE и др.
+sudo pam-math-challenge restart   # перезапуск DM (СБРОСИТ СЕССИЮ!)
 ```
+
+Если ваш лок-скрин не входит в стандартный список, можно определить нужный
+PAM-сервис самостоятельно:
+
+```bash
+# список всех сервисов:
+ls /etc/pam.d/ /usr/lib/pam.d/
+# svcname обычно совпадает с именем программы экрана блокировки
+```
+
+Кандидатов (`kde`, `xfce4-screensaver`, `xscreensaver`, …) нигде дописывать
+не нужно: `sudo pam-math-challenge refresh` подхватит появившийся
+`/usr/lib/pam.d/<имя>` при следующем обновлении списка хелпера.
 
 ### Debian / Ubuntu / Linux Mint
 
