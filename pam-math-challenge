@@ -1,110 +1,223 @@
 #!/bin/sh
-# pam-math-challenge — включение/отключение челленджа в PAM-стеке LightDM.
+# pam-math-challenge — включение/отключение челленджа в PAM-стеках.
 #
-# Управляет строкой "auth optional pam_math_challenge.so" в /etc/pam.d/lightdm.
-# Работает идемпотентно, создаёт бэкап перед первым изменением.
+# Патчит не только lightdm, но и ЛЮБОЙ обнаруженный стек, через который
+# реально проходит вход/разблокировка экрана:
+#
+#   менеджеры входа:    lightdm (/etc/pam.d), plasmalogin (/usr/lib/pam.d)
+#   экраны блокировки:  kde (KDE Plasma / kscreenlocker), xfce4-screensaver,
+#                       light-locker, xscreensaver, gnome-screensaver,
+#                       mate-screensaver, cinnamon-screensaver
+#
+# Для файлов из /usr/lib/pam.d (owned пакетами) создаются OVERRIDE в
+# /etc/pam.d/<имя> — man 8 pam: "All files in /etc/pam.d/ override files with
+# the same name in other directories". Файлы пакетов при этом не трогаются,
+# pacman-обновления их перетирают безопасно; регенерация — `refresh`.
 #
 # Использование:
-#   pam-math-challenge enable     — подключить модуль (idempotent)
-#   pam-math-challenge disable    — отключить (убрать строку)
-#   pam-math-challenge status     — установлен ли / активен ли
-#   pam-math-challenge restart    — перезапуск lightdm (потеряет X-сессию)
+#   pam-math-challenge enable     — подключить во все найденные стеки
+#   pam-math-challenge disable    — отключить отовсюду
+#   pam-math-challenge status     — что найдено / активно
+#   pam-math-challenge refresh    — регенерировать override'ы после
+#                                   обновления пакетов (Plasma и т.п.)
+#   pam-math-challenge restart    — перезапуск display manager
 #
-# Поддерживаемые дистрибутивы: Linux Mint, Ubuntu (Debian-based), Arch,
-# EndeavourOS (Arch-based) с LightDM.
+# Требует root; запускать из tty/ssh-сессии.
 
 set -u
 
 PAM_NAME="pam_math_challenge"
-PAM_LIB_CANDIDATES="/usr/lib/x86_64-linux-gnu/security /usr/lib/security /usr/lib64/security /lib/security"
 CONF_PATH="/etc/security/math_challenge.conf"
+ETC_PAM="/etc/pam.d"
+VENDOR_PAM="/usr/lib/pam.d"
+
+# Сервисы, связанные с входом и экраном блокировки. autologin-файлы
+# НЕ патчим: там нет проверки пароля, челлендж просто сломает автологин.
+LOGIN_SERVICES="lightdm plasmalogin"
+LOCK_SERVICES="kde xfce4-screensaver light-locker xscreensaver gnome-screensaver mate-screensaver cinnamon-screensaver"
+
+MARKER="# pam-math-challenge override (генерируется helper'ом)"
 
 msg()   { printf '%s\n' "$*"; }
 ok()    { printf '[+] %s\n' "$*"; }
 warn()  { printf '[!] %s\n' "$*" >&2; }
 die()   { printf '[x] %s\n' "$*" >&2; exit 1; }
 
-find_lib_dir() {
-    for d in $PAM_LIB_CANDIDATES; do
-        [ -f "$d/${PAM_NAME}.so" ] && { echo "$d"; return 0; }
+need_root() {
+    [ "$(id -u)" -eq 0 ] || die "требуется root (sudo pam-math-challenge $1)"
+}
+
+# ---- обнаружение сервисов в /etc/pam.d и /usr/lib/pam.d ----
+
+find_service_files() {
+    for base in "$ETC_PAM" "$VENDOR_PAM"; do
+        for name in $LOGIN_SERVICES $LOCK_SERVICES; do
+            [ -f "$base/$name" ] && echo "$base/$name"
+        done
     done
-    return 1
 }
 
 line_exists() {
-    # строка может быть закомментирована или с другим параметром — ищем по
-    # имени модуля среди АКТИВНЫХ auth-строк (не начинаются с '#')
     grep -qE "^[[:space:]]*auth[[:space:]]+[^#]*${PAM_NAME}\.so" "$1" 2>/dev/null
 }
 
-enable_module() {
-    [ "$(id -u)" -eq 0 ] || die "enable требует root (sudo pam-math-challenge enable)"
-    PAM_FILE="/etc/pam.d/lightdm"
-    [ -f "$PAM_FILE" ] || die "$PAM_FILE не найден — LightDM не установлен?"
+# номер строки ПОСЛЕ которой вставлять (= последняя auth-строка), 0 если нет
+last_auth_line() {
+    awk '$1=="auth" || $1=="-auth" {n=NR} END{print n+0}' "$1"
+}
 
-    if line_exists "$PAM_FILE"; then
-        ok "модуль уже активен в $PAM_FILE"
+# Вставить строку после последнего auth-правила (или в конец файла).
+# Второй параметр "nomarker" — не добавлять маркер (для обычных /etc-файлов).
+insert_after_last_auth() {
+    file="$1"
+    tmp="$(mktemp)"
+    n=$(last_auth_line "$file")
+    if [ "$n" -gt 0 ]; then
+        awk -v n="$n" -v line="auth optional ${PAM_NAME}.so" \
+            'NR==n{print; print line; next} {print}' "$file" > "$tmp"
+    else
+        { cat "$file"; printf 'auth optional %s.so\n' "$PAM_NAME"; } > "$tmp"
+    fi
+    [ "${2:-}" = "nomarker" ] || printf '\n%s\n' "$MARKER" >> "$tmp"
+    chmod --reference="$file" "$tmp" 2>/dev/null || chmod 0644 "$tmp"
+    mv "$tmp" "$file"
+}
+
+enable_one() {
+    src="$1"
+    name=$(basename "$src")
+
+    if [ "${src#$VENDOR_PAM}" != "$src" ]; then
+        # vendor-файл из пакета: создаём override в /etc/pam.d
+        target="$ETC_PAM/$name"
+        if [ -f "$target" ]; then
+            if grep -q "$MARKER" "$target" 2>/dev/null; then
+                # наш прошлый override — регенерируем из актуального vendor-файла
+                cp "$src" "$target.new"
+                line_exists "$target" && insert_after_last_auth "$target.new" nomarker
+                insert_after_last_auth "$target.new"
+                chmod --reference="$target" "$target.new" 2>/dev/null || chmod 0644 "$target.new"
+                mv "$target.new" "$target"
+                ok "override обновлён: $target (из актуального $src)"
+            else
+                warn "$target уже существует и не наш — применим вставку строки"
+                line_exists "$target" || insert_after_last_auth "$target" nomarker
+                ok "строка добавлена: $target"
+            fi
+            return 0
+        fi
+        install -m 0644 "$src" "$target"
+        insert_after_last_auth "$target"
+        ok "создан override: $target (копия $src + строка)"
+        warn "после обновления пакета '$name' перезапустите: pam-math-challenge refresh"
         return 0
     fi
 
-    BACKUP="${PAM_FILE}.pammath.bak"
-    if [ ! -f "$BACKUP" ]; then
-        cp -a "$PAM_FILE" "$BACKUP" && ok "бэкап: $BACKUP"
+    # файл прямо в /etc/pam.d — правим с бэкапом, БЕЗ маркера
+    if line_exists "$src"; then
+        ok "уже активен: $src"
+        return 0
     fi
-    printf 'auth optional %s.so\n' "$PAM_NAME" >> "$PAM_FILE"
-    ok "добавлена строка в $PAM_FILE"
-    msg "    Перезапустите lightdm: pam-math-challenge restart (потеряет текущую X-сессию)"
-    msg "    или просто выйдите из сеанса — новый стек прочитается автоматически."
+    BACKUP="${src}.pammath.bak"
+    [ -f "$BACKUP" ] || cp -a "$src" "$BACKUP"
+    insert_after_last_auth "$src" nomarker
+    ok "строка добавлена: $src (бэкап: $BACKUP)"
+}
+
+enable_module() {
+    need_root enable
+    [ -f "$ETC_PAM/lightdm" ] || [ -f "$VENDOR_PAM/plasmalogin" ] \
+        || warn "ни lightdm, ни plasmalogin не найдены — возможно, у вас другой DM"
+
+    for f in $(find_service_files); do enable_one "$f"; done
+
+    msg ""
+    msg "Перезапуск display manager применит изменения немедленно:"
+    msg "    pam-math-challenge restart    (СБРОСИТ ТЕКУЩУЮ X/WAYLAND-СЕССИЮ!)"
+    msg "или просто разлогиньтесь/заблокируйте экран."
 }
 
 disable_module() {
-    [ "$(id -u)" -eq 0 ] || die "disable требует root"
-    PAM_FILE="/etc/pam.d/lightdm"
-    [ -f "$PAM_FILE" ] || return 0
+    need_root disable
+    for f in $ETC_PAM/*; do
+        [ -f "$f" ] || continue
+        if grep -q "$MARKER" "$f" 2>/dev/null; then
+            # это наш генерируемый override: если существует vendor-файл,
+            # полностью удаляем override (вернётся пакетный файл)
+            name=$(basename "$f")
+            if [ -f "$VENDOR_PAM/$name" ]; then
+                rm -f "$f"
+                ok "override удалён (вернулось к vendor-файлу): $f"
+            else
+                sed -i "/^auth optional ${PAM_NAME}\.so/d" "$f"
+                sed -i "/${MARKER}/d" "$f"
+                ok "override очищен (vendor-файла нет, файл оставлен): $f"
+            fi
+        fi
+    done
+    # плюс удаляем строку из любых обычных файлов /etc/pam.d (без маркера)
+    for f in $ETC_PAM/*; do
+        [ -f "$f" ] || continue
+        if line_exists "$f"; then
+            sed -i "/^[[:space:]]*[-a]*auth[[:space:]]\{1,\}optional[[:space:]]\{1,\}${PAM_NAME}\.so/d" "$f"
+            ok "строка удалена: $f"
+        fi
+    done
+}
 
-    if line_exists "$PAM_FILE"; then
-        sed -i "/^[[:space:]]*auth[[:space:]]\+[^#]*${PAM_NAME}\.so/d" "$PAM_FILE"
-        ok "строка удалена из $PAM_FILE"
-    else
-        ok "в $PAM_FILE нет активной строки — ничего не делаю"
-    fi
+refresh_module() {
+    need_root refresh
+    for f in $(find_service_files); do
+        case "$f" in "$VENDOR_PAM"/*) enable_one "$f";; esac
+    done
 }
 
 show_status() {
-    LINE="?"
-    LIB_DIR="$(find_lib_dir || true)"
-    CONF="?"
-    if [ -f "$CONF_PATH" ]; then CONF="yes: $CONF_PATH"; else CONF="no"; fi
-    if [ -n "${LIB_DIR:-}" ] && [ -f "$LIB_DIR/${PAM_NAME}.so" ]; then
-        SO="installed: $LIB_DIR/${PAM_NAME}.so"
+    msg "module   : $(find_lib_dir 2>/dev/null)"
+    for f in $(find_service_files); do
+        if line_exists "$f"; then
+            msg "  активен   : $f"
+        else
+            msg "  не активн.: $f"
+        fi
+    done
+    if [ -f "$CONF_PATH" ]; then
+        msg "config   : $CONF_PATH"
     else
-        SO="not installed"
+        msg "config   : НЕ УСТАНОВЛЕН — модуль сработает в fail-open (PAM_IGNORE)"
     fi
-    if grep -qE "^[[:space:]]*auth[[:space:]]+[^#]*${PAM_NAME}\.so" /etc/pam.d/lightdm 2>/dev/null; then
-        ACTIVE="enabled in /etc/pam.d/lightdm"
-    else
-        ACTIVE="not enabled (/etc/pam.d/lightdm)"
-    fi
-    msg "module   : $SO"
-    msg "pam stack: $ACTIVE"
-    msg "config   : $CONF"
+}
+
+find_lib_dir() {
+    for d in /usr/lib/x86_64-linux-gnu/security /usr/lib/security; do
+        [ -f "$d/${PAM_NAME}.so" ] && echo "installed: $d/${PAM_NAME}.so" && return 0
+    done
+    echo "not installed" && return 1
+}
+
+detect_dm() {
+    if systemctl is-active plasmalogin >/dev/null 2>&1; then echo plasmalogin
+    elif systemctl is-active lightdm >/dev/null 2>&1; then echo lightdm
+    else echo "не определён"; fi
 }
 
 restart_lightdm() {
-    [ "$(id -u)" -eq 0 ] || die "restart требует root"
-    if command -v systemctl >/dev/null 2>&1; then
-        warn "ПЕРЕЗАПУСК УБЬЁТ ТЕКУЩУЮ ГРАФИЧЕСКУЮ СЕССИЮ! Убедитесь, что у вас открыт tty или ssh."
-        sleep 3
-        systemctl restart lightdm
-    else
-        die "systemd не найден"
-    fi
+    need_root restart
+    dm=$(detect_dm)
+    warn "ПЕРЕЗАПУСК УБЬЁТ ТЕКУЩУЮ ГРАФИЧЕСКУЮ СЕССИЮ! Откройте tty/ssh заранее."
+    sleep 3
+    case "$dm" in
+        plasmalogin) systemctl restart plasmalogin ;;
+        lightdm)     systemctl restart lightdm ;;
+        *) die "display manager не определён, перезапустите вручную" ;;
+    esac
 }
 
 case "${1:-status}" in
     enable)   enable_module ;;
     disable)  disable_module ;;
+    refresh)  refresh_module ;;
     status)   show_status ;;
     restart)  restart_lightdm ;;
-    *)        die "использование: $0 {enable|disable|status|restart}" ;;
+    *)        die "использование: $0 {enable|disable|refresh|status|restart}" ;;
 esac
