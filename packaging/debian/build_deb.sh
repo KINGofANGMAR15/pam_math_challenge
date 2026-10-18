@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PKGDIR="$ROOT/packaging/debian"
 STAGE="$PKGDIR/staging"
 NAME="pam-math-challenge"
-VERSION="1.1.0-1"
+VERSION="1.1.1-1"
 ARCH="amd64"
 OUT="$ROOT/${NAME}_${VERSION}_${ARCH}.deb"
 
@@ -50,6 +50,10 @@ install -m 0644 "$ROOT/README.md" "$ROOT/Makefile" "$STAGE/usr/share/doc/$NAME/"
 gzip -n -9 "$STAGE/usr/share/doc/$NAME/README.md" || true
 # копируем readme с оригинальным именем, не gzip'ом (читабельность)
 install -m 0644 "$ROOT/README.md" "$STAGE/usr/share/doc/$NAME/README"
+
+# tmpfiles для /run/math_challenge
+install -Dm0644 "$ROOT/tmpfiles.conf" \
+    "$STAGE/usr/lib/tmpfiles.d/pam-math-challenge.conf"
 
 # control-файлы
 install -m 0644 "$PKGDIR/control"    "$STAGE/DEBIAN/control"

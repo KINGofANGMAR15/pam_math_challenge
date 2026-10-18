@@ -3,13 +3,13 @@
 #
 # Сборка (внутри каталога проекта pam_math_challenge/):
 #   makepkg -f
-#   sudo pacman -U pam-math-challenge-1.1.0-1-x86_64.pkg.tar.zst
+#   sudo pacman -U pam-math-challenge-1.1.1-1-x86_64.pkg.tar.zst
 #
 # Если проект клонирован из git, можно также сделать makepkg с git-source —
 # см. комментарий ниже.
 
 pkgname=pam-math-challenge
-pkgver=1.1.0
+pkgver=1.1.1
 pkgrel=1
 pkgdesc="Математический чекап как второй фактор входа через PAM (LightDM)"
 arch=('x86_64')
@@ -27,12 +27,13 @@ source=(
     "Makefile"
     "math_challenge.conf"
     "pam-math-challenge"
+    "tmpfiles.conf"
     "README.md"
 )
 # Для сборки прямиком из git замените блок source на:
 #   source=("$pkgname::git+https://github.com/your-name/pam_math_challenge.git")
 # и в build()/package() используйте "$srcdir/$pkgname".
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 build() {
     make clean >/dev/null
@@ -49,6 +50,9 @@ package() {
         "$pkgdir/usr/bin/pam-math-challenge"
     install -Dm0644 "math_challenge.conf" \
         "$pkgdir/etc/security/math_challenge.conf"
+    # tmpfiles: /run/math_challenge (1733) создаётся systemd-tmpfiles
+    install -Dm0644 "tmpfiles.conf" \
+        "$pkgdir/usr/lib/tmpfiles.d/pam-math-challenge.conf"
     install -Dm0644 "README.md" \
         "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

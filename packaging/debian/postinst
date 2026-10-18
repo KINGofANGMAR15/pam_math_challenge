@@ -19,4 +19,10 @@ fi
 
 #DEBHELPER#
 
+# /run — tmpfs, каталог состояния нужен сразу (до ребута тоже работает,
+# tmpfiles.d подхватит его при следующей загрузке).
+if [ -f /usr/lib/tmpfiles.d/pam-math-challenge.conf ] && command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /usr/lib/tmpfiles.d/pam-math-challenge.conf || true
+fi
+
 exit 0

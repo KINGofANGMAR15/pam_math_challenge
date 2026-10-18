@@ -51,14 +51,14 @@ directories»* (`man 8 pam`, `man 5 pam.d`). После обновления п�
 
 ### Через пакет (рекомендуется)
 
-> Версии вида `1.1.0-1` в командах ниже — «версия pkgver-pkgrel»; на выходе
+> Версии вида `1.1.1-1` в командах ниже — «версия pkgver-pkgrel»; на выходе
 > сборки имя файла указывается в итоговом выводе, используйте его настоящим.
 
 **Mint / Ubuntu / Debian** — сборка и установка .deb (на самой системе с dpkg):
 
 ```bash
 ./packaging/debian/build_deb.sh
-sudo dpkg -i pam-math-challenge_1.1.0-1_amd64.deb
+sudo dpkg -i pam-math-challenge_1.1.1-1_amd64.deb
 # при неудовлетворённых зависимостях: sudo apt -f install
 ```
 
@@ -71,7 +71,7 @@ sudo dpkg -i pam-math-challenge_1.1.0-1_amd64.deb
 
 ```bash
 makepkg -f
-sudo pacman -U pam-math-challenge-1.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U pam-math-challenge-1.1.1-1-x86_64.pkg.tar.zst
 ```
 
 pacman scriptlet (`pam-math-challenge.install`) делает то же самое через

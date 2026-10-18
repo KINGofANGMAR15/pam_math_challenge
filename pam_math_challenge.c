@@ -209,6 +209,8 @@ static int load_conf(const char *path, cfg_t *c)
 
 /* ---------------- состояние ---------------- */
 
+#define state_dir_mode 01733
+
 static int ensure_state_dir(const char *dir)
 {
     char tmp[1024];
@@ -224,7 +226,9 @@ static int ensure_state_dir(const char *dir)
             *p = '/';
         }
     }
-    if (mkdir(tmp, 0700) && errno != EEXIST) return -1;
+    /* 1733: sticky+wx — каждый пользователь создаёт ТОЛЬКО СВОЙ файл,
+     * читать/списавать чужие нельзя, удалять чужие через sticky нельзя. */
+    if (mkdir(tmp, 01733) && errno != EEXIST) return -1;
     return 0;
 }
 
@@ -529,7 +533,12 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
             return PAM_CONV_ERR;
         }
 
-        ok = (parse_long_strict(answer, &got) == 0 && got == ans);
+        int numeric = (parse_long_strict(answer, &got) == 0);
+        ok = numeric && (got == ans);
+        /* Диагностика: НЕ логируем сам ответ, только его форму и длину. */
+        pam_syslog(pamh, LOG_INFO,
+                   "attempt %d/%d: answer len=%zu numeric=%s",
+                   i + 1, cfg.attempts, strlen(answer), numeric ? "yes" : "no");
         secure_zero(answer, strlen(answer));
         free(answer);
         /* q: вопрос и ans живут только на стеке этой итерации. */
