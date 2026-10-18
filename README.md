@@ -34,6 +34,9 @@ PAM-модуль для Linux, который добавляет **матема�
 
 ### Через пакет (рекомендуется)
 
+> Версии вида `1.0.0-1` в командах ниже — «версия pkgver-pkgrel»; на выходе
+> сборки имя файла указывается в итоговом выводе, используйте его настоящим.
+
 **Mint / Ubuntu / Debian** — сборка и установка .deb (на самой системе с dpkg):
 
 ```bash
@@ -113,6 +116,21 @@ ignore_errors = false       # PAM_IGNORE вместо PAM_SUCCESS после в�
 
 ## Удаление
 
+Через пакетный менеджер (если ставили пакетом — рекомендуемый путь):
+
+```bash
+# Mint / Ubuntu / Debian
+sudo dpkg -r pam-math-challenge        # или --purge, чтобы убрать и бэкап
+# Arch / EndeavourOS
+sudo pacman -Rns pam-math-challenge
+```
+
+Порядок безопасный: скрипты пакета (`prerm`/`pre_remove`) **сначала** убирают
+строку из `/etc/pam.d/lightdm`, и только после этого удаляется `.so` — стек
+никогда не остаётся битым (проверено в Docker-контейнере Debian 12).
+
+Ручной вариант (для установки из исходников через `install.sh`):
+
 ```bash
 sudo ./install.sh --uninstall
 ```
@@ -141,6 +159,9 @@ sudo ./install.sh --uninstall
 - правьте `/etc/pam.d/lightdm`, уберите `pam_math_challenge.so` строку (или `rm -f /run/math_challenge/<user>`)
 - `sync; reboot`
 
+Если модуль ставился пакетом — можно загрузиться в tty и сделать
+`sudo dpkg -r pam-math-challenge` / `sudo pacman -Rns pam-math-challenge`.
+
 ## Что в репозитории
 
 ```
@@ -154,6 +175,23 @@ pam-math-challenge.install  — pacman-скриптлет (post_install/pre_remo
 packaging/debian/           — сборка .deb: control, postinst, prerm, postrm,
                               conffiles, build_deb.sh
 README.md                   — этот файл
+```
+
+## Сборка и тестирование пакета
+
+Протестировано:
+- `pkg.tar.zst` — собран `makepkg` на EndeavourOS (layout `/usr/lib/security/` — OK).
+- `.deb` — собран и прогнан в Docker-контейнере Debian 12: `postinst` сам
+  правит `/etc/pam.d/lightdm` (обратимо, с бэкапом), удаление пакета
+  оставляет стек нетронутым.
+
+Можно повторить контейнерный тест самостоятельно:
+
+```bash
+cd pam_math_challenge
+sudo docker run --rm -v "$PWD:/src" -w /src debian:12 bash -c "
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+    build-essential libpam0g-dev dpkg-dev && ./packaging/debian/build_deb.sh"
 ```
 
 ## Безопасность
