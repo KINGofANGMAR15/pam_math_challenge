@@ -1,0 +1,19 @@
+# Собранные артефакты
+*.so
+*.o
+
+# makepkg
+src/
+pkg/
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.log
+
+# dpkg staging
+packaging/debian/staging/
+*.deb
+
+# редакторы
+*.swp
+.idea/
+.vscode/
